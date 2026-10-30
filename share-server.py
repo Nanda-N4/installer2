@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 N4_VERSION = "2026.09.24-r10"
 
+import datetime
 import html
 import json
 import time
@@ -57,7 +58,56 @@ def load_token(token):
     return data, "ok"
 
 
+def remaining_info(username):
+    """Live balance, read fresh on EVERY request (so pull-to-refresh works).
+    Returns None if this account has no GB record (legacy account).
+    Share server runs as n4share, so it cannot read /etc/shadow;
+    lock status is therefore not shown here (Bot detail shows it)."""
+    if not username:
+        return None
+    try:
+        rec = {}
+        for line in Path(f"/etc/n4vpn/accounts/{username}").read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                k, v = line.strip().split("=", 1)
+                rec[k] = v
+    except OSError:
+        return None
+    try:
+        gb = int(rec.get("GB_LIMIT", "0") or 0)
+    except ValueError:
+        gb = 0
+    try:
+        used = int(rec.get("USED_BYTES", "0") or 0)
+    except ValueError:
+        used = 0
+    used_gb = used / (1024 ** 3)
+    expiry = rec.get("EXPIRY", "")
+    days_left = None
+    if expiry:
+        try:
+            days_left = (datetime.date.fromisoformat(expiry) - datetime.date.today()).days
+        except ValueError:
+            days_left = None
+    if days_left is not None and days_left < 0:
+        status = "Expired"
+    elif gb > 0 and used_gb >= gb:
+        status = "GB limit reached"
+    else:
+        status = "Active"
+    return {
+        "status": status,
+        "expiry": expiry,
+        "days_left": days_left,
+        "gb": gb,
+        "used_gb": used_gb,
+        "used_mb": used / (1024 ** 2),
+        "rem_gb": (gb - used_gb) if gb > 0 else None,
+    }
+
+
 def esc(value):
+
     return html.escape(str(value or ""))
 
 
@@ -171,6 +221,32 @@ class Handler(BaseHTTPRequestHandler):
             ) if val
         )
 
+        rem = remaining_info(username)
+        if rem is None:
+            remaining = '<div class="d"><span>Balance</span><b>Not available for this account</b></div>'
+        else:
+            if rem["days_left"] is None:
+                days_txt = "-"
+            elif rem["days_left"] < 0:
+                days_txt = f"Expired {-rem['days_left']} days ago"
+            elif rem["days_left"] == 0:
+                days_txt = "Last day"
+            else:
+                days_txt = f"{rem['days_left']} days left"
+            rem_gb_txt = f"{rem['rem_gb']:.2f} GB" if rem["rem_gb"] is not None else "Unlimited"
+            gb_txt = f"{rem['gb']} GB" if rem["gb"] > 0 else "Unlimited"
+            remaining = "".join(
+                f'<div class="d"><span>{esc(label)}</span><b>{esc(val)}</b></div>'
+                for label, val in (
+                    ("Status", rem["status"]),
+                    ("Days Left", days_txt),
+                    ("GB Limit", gb_txt),
+                    ("Used", f"{rem['used_gb']:.2f} GB ({rem['used_mb']:.1f} MB)"),
+                    ("Remaining", rem_gb_txt),
+                )
+            )
+        updated_txt = time.strftime("%Y-%m-%d %H:%M:%S")
+
         default_payload = "GET / HTTP/1.1[crlf]Host: [host][crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]"
         mec_payload = "PUT [host_port] [protocol][crlf]Host: www.mectel.com.mm[crlf][crlf]"
 
@@ -202,6 +278,7 @@ body{{padding:max(10px,env(safe-area-inset-top)) 10px max(12px,env(safe-area-ins
 <header class="head"><div class="brand"><div class="bl"><div class="logo">N4</div><div class="name"><strong>N4 VPN</strong><small>Connection Details</small></div></div><div class="badge">PRIVATE</div></div><div class="meta"><span class="active">● Active</span><span>Expires {esc(data.get("expires_date",""))}</span></div></header>
 <section class="sec"><div class="st">QUICK COPY</div><div class="quick">{''.join(quick)}</div></section>
 <section class="sec"><div class="st">SERVICE DETAILS</div><div class="details">{details}</div></section>
+<section class="sec"><div class="st">REMAINING BALANCE — refresh to update</div><div class="details">{remaining}</div><div class="meta"><span>Last updated: {esc(updated_txt)} (server time, re-read on every refresh)</span></div></section>
 <section class="sec"><div class="st">PAYLOADS</div><div class="payloads">
 <div class="p"><div class="pt"><span>DEFAULT</span><button class="copy" onclick="cp('default_payload',this)">Copy</button></div><code id="default_payload">{esc(default_payload)}</code></div>
 <div class="p"><div class="pt"><span>MEC</span><button class="copy" onclick="cp('mec_payload',this)">Copy</button></div><code id="mec_payload">{esc(mec_payload)}</code></div>

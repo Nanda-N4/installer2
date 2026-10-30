@@ -232,10 +232,10 @@ ExecStart=/usr/local/bin/gb-limit.sh
 EOF
  cat >/etc/systemd/system/n4-gblimit.timer <<'EOF'
 [Unit]
-Description=N4 GB limit timer (every 5 minutes)
+Description=N4 GB limit timer (every 1 minute)
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=5min
+OnUnitActiveSec=1min
 Persistent=true
 [Install]
 WantedBy=timers.target
