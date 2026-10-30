@@ -174,7 +174,9 @@ def user_detail(user):
     used = int(d.get("USED_BYTES", "0") or 0)
     used_gb = used / (1024 ** 3)
     if gb > 0:
-        rem_gb = gb - used_gb
+        # Clamp: never show a negative remaining (lock test 2026-10-30
+        # showed -0.07 GB at Used 1.07/1 GB; remaining is 0 once over).
+        rem_gb = max(0.0, gb - used_gb)
         gb_line = f"💾 GB Limit: {gb} GB\n📥 Used: {used_gb:.2f} GB\n📤 Remaining: {rem_gb:.2f} GB"
     else:
         gb_line = f"💾 GB Limit: Unlimited\n📥 Used: {used_gb:.2f} GB\n📤 Remaining: Unlimited"
@@ -280,27 +282,46 @@ def home_keyboard():
 
 
 def users_keyboard():
+    # Unified layout rule: short labels = 2 per row, long = full-width.
+    # Two usernames share a row only if both are short (<=16 chars);
+    # a long name gets its own row so buttons never squeeze/truncate.
     rows = []
-    for u in list_users():
-        rows.append([btn(f"👤 {u}", cb=f"user:{u}", style="primary")])
+    us = list_users()
+    i = 0
+    while i < len(us):
+        if i + 1 < len(us) and len(us[i]) <= 16 and len(us[i + 1]) <= 16:
+            rows.append([btn(f"👤 {us[i]}", cb=f"user:{us[i]}", style="primary"),
+                         btn(f"👤 {us[i + 1]}", cb=f"user:{us[i + 1]}", style="primary")])
+            i += 2
+        else:
+            rows.append([btn(f"👤 {us[i]}", cb=f"user:{us[i]}", style="primary")])
+            i += 1
     rows.append([btn("🏠 Home", cb="home")])
     return {"inline_keyboard": rows}
 
 
 def detail_keyboard(user):
+    # Destructive = always full-width, everywhere (Home Delete is
+    # full-width too). So Detail is 1-per-row: Renew, Delete, Home.
     return {"inline_keyboard": [
-        [btn("🔄 Renew", cb=f"renew:{user}", style="success"),
-         btn("🗑 Delete", cb=f"delete:{user}", style="danger")],
+        [btn("🔄 Renew", cb=f"renew:{user}", style="success")],
+        [btn("🗑 Delete", cb=f"delete:{user}", style="danger")],
         [btn("🏠 Home", cb="home")],
     ]}
 
 
 def create_choice_keyboard():
     return {"inline_keyboard": [
-        [btn("🎲 Auto Username & Password", cb="create_auto", style="success")],
-        [btn("✏️ Custom Username & Password", cb="create_custom", style="primary")],
+        [btn("🎲 Auto Username & Password", cb="create_auto", style="success"),
+         btn("✏️ Custom Username & Password", cb="create_custom", style="primary")],
         [btn("🏠 Home", cb="home")],
     ]}
+
+
+def cancel_keyboard():
+    # Every step prompt gets this single row, so a stale prompt can
+    # never leave the user stranded without a way out.
+    return {"inline_keyboard": [[btn("❌ Cancel", cb="cancel")]]}
 
 
 def handle(text):
@@ -365,6 +386,52 @@ def send_msg(token, chat, text, keyboard=None):
     return tg(token, "sendMessage", **params)
 
 
+def edit_msg(token, chat, message_id, text, keyboard=None):
+    # Edit the tapped message in place instead of stacking a new one
+    # (the Bot duplication bug: every callback used to sendMessage).
+    # "message is not modified" is harmless (same text tapped twice).
+    # Any other edit failure falls back to a new message, so the user
+    # never loses the reply entirely.
+    params = {"chat_id": chat, "message_id": message_id, "text": text[:4000]}
+    if keyboard is not None:
+        params["reply_markup"] = keyboard
+    try:
+        return tg(token, "editMessageText", **params)
+    except Exception as e:
+        if "message is not modified" in str(e):
+            return None
+        return send_msg(token, chat, text, keyboard=keyboard)
+
+
+def clear_keyboard(token, chat, message_id):
+    # Kill stale buttons on a message that is being superseded
+    # (e.g. a step prompt after the final result is sent as new).
+    try:
+        tg(token, "editMessageReplyMarkup", chat_id=chat, message_id=message_id,
+           reply_markup={"inline_keyboard": []})
+    except Exception:
+        pass
+
+
+def cb_show(token, chat, message_id, text, keyboard=None):
+    # Callback reply: edit in place when we have the tapped message,
+    # otherwise send new (e.g. a callback without a message object).
+    if message_id:
+        return edit_msg(token, chat, message_id, text, keyboard=keyboard)
+    return send_msg(token, chat, text, keyboard=keyboard)
+
+
+def step_show(token, chat, state, text, keyboard=None):
+    # Step-flow prompt: edit the flow's own message when tracked,
+    # otherwise send new. Keyboard defaults to the Cancel row.
+    if keyboard is None:
+        keyboard = cancel_keyboard()
+    mid = (state or {}).get("mid")
+    if mid:
+        return edit_msg(token, chat, mid, text, keyboard=keyboard)
+    return send_msg(token, chat, text, keyboard=keyboard)
+
+
 def poll(token):
     owner = load_owner_id()
     offset = 0
@@ -381,6 +448,7 @@ def poll(token):
                 cb = upd.get("callback_query") or {}
                 if cb:
                     chat = (cb.get("message") or {}).get("chat", {}).get("id")
+                    mid = (cb.get("message") or {}).get("message_id")
                     sender = (cb.get("from") or {}).get("id")
                     try:
                         tg(token, "answerCallbackQuery", callback_query_id=cb["id"])
@@ -393,44 +461,56 @@ def poll(token):
                         continue
                     data = cb.get("data") or ""
                     if data == "home":
-                        send_msg(token, chat, home_text(), keyboard=home_keyboard())
+                        states.pop(chat, None)
+                        cb_show(token, chat, mid, home_text(), keyboard=home_keyboard())
+                    elif data == "cancel":
+                        states.pop(chat, None)
+                        cb_show(token, chat, mid, home_text(), keyboard=home_keyboard())
                     elif data == "list":
-                        send_msg(token, chat, handle("/list"), keyboard=home_keyboard())
+                        states.pop(chat, None)
+                        cb_show(token, chat, mid, handle("/list"), keyboard=home_keyboard())
                     elif data == "create":
-                        send_msg(token, chat, "➕ Create Account\n\nChoose how to create:", keyboard=create_choice_keyboard())
+                        states.pop(chat, None)
+                        cb_show(token, chat, mid, "➕ Create Account\n\nChoose how to create:", keyboard=create_choice_keyboard())
                     elif data == "create_auto":
                         u = gen_username(); pw = gen_password()
                         if not u or not pw:
-                            send_msg(token, chat, "Auto-generate failed, try again.", keyboard=home_keyboard())
+                            cb_show(token, chat, mid, "Auto-generate failed, try again.", keyboard=home_keyboard())
                         else:
-                            states[chat] = {"kind": "create", "step": "days", "user": u, "pass": pw}
-                            send_msg(token, chat, f"🎲 Auto-generated (save this):\n👤 Username: {u}\n🔑 Password: {pw}\n\nSend days (number, e.g. 30):")
+                            states[chat] = {"kind": "create", "step": "days", "user": u, "pass": pw, "mid": mid}
+                            cb_show(token, chat, mid, f"🎲 Auto-generated (save this):\n👤 Username: {u}\n🔑 Password: {pw}\n\nSend days (number, e.g. 30):", keyboard=cancel_keyboard())
                     elif data == "create_custom":
-                        states[chat] = {"kind": "create", "step": "user"}
-                        send_msg(token, chat, "➕ Create Account\n\nSend username:")
+                        states[chat] = {"kind": "create", "step": "user", "mid": mid}
+                        cb_show(token, chat, mid, "➕ Create Account\n\nSend username:", keyboard=cancel_keyboard())
                     elif data == "users":
+                        states.pop(chat, None)
                         us = list_users()
                         if not us:
-                            send_msg(token, chat, "No users.", keyboard=home_keyboard())
+                            cb_show(token, chat, mid, "No users.", keyboard=home_keyboard())
                         else:
-                            send_msg(token, chat, "👤 Choose a user to check:", keyboard=users_keyboard())
+                            cb_show(token, chat, mid, "👤 Choose a user to check:", keyboard=users_keyboard())
                     elif data.startswith("user:"):
-                        send_msg(token, chat, user_detail(data[5:]), keyboard=detail_keyboard(data[5:]))
+                        states.pop(chat, None)
+                        cb_show(token, chat, mid, user_detail(data[5:]), keyboard=detail_keyboard(data[5:]))
                     elif data.startswith("renew:"):
-                        states[chat] = {"kind": "renew", "step": "days", "user": data[6:]}
-                        send_msg(token, chat, f"🔄 Renew {data[6:]}\n\nSend days (number):")
+                        states[chat] = {"kind": "renew", "step": "days", "user": data[6:], "mid": mid}
+                        cb_show(token, chat, mid, f"🔄 Renew {data[6:]}\n\nSend days (number):", keyboard=cancel_keyboard())
                     elif data.startswith("delete:"):
+                        states.pop(chat, None)
                         u = data[7:]
-                        send_msg(token, chat, f"⚠️ Delete {u} permanently?", keyboard={"inline_keyboard": [[btn("✅ Yes, Delete", cb=f"delyes:{u}", style="danger"), btn("❌ Cancel", cb="home")]]})
+                        # Destructive full-width; Cancel returns to the
+                        # detail card (was: home, losing the user card).
+                        cb_show(token, chat, mid, f"⚠️ Delete {u} permanently?", keyboard={"inline_keyboard": [[btn("✅ Yes, Delete", cb=f"delyes:{u}", style="danger")], [btn("❌ Cancel", cb=f"user:{u}")]]})
                     elif data.startswith("delyes:"):
                         u = data[7:]
-                        send_msg(token, chat, run_helper(["delete", u]), keyboard=home_keyboard())
+                        states.pop(chat, None)
+                        cb_show(token, chat, mid, run_helper(["delete", u]), keyboard=home_keyboard())
                     elif data == "renew_prompt":
-                        send_msg(token, chat, "Send: /renew <user> <days> <gb>")
+                        cb_show(token, chat, mid, "Send: /renew <user> <days> <gb>", keyboard=home_keyboard())
                     elif data == "usage_prompt":
-                        send_msg(token, chat, "Send: /usage <user>")
+                        cb_show(token, chat, mid, "Send: /usage <user>", keyboard=home_keyboard())
                     elif data == "delete_prompt":
-                        send_msg(token, chat, "⚠️ Delete is permanent.\nSend: /delete <user>")
+                        cb_show(token, chat, mid, "⚠️ Delete is permanent.\nSend: /delete <user>", keyboard=home_keyboard())
                     continue
                 # --- Text messages ---
                 msg = upd.get("message") or {}
@@ -442,7 +522,9 @@ def poll(token):
                         send_msg(token, chat, "Not authorized.")
                         continue
                     if text.strip() == "/cancel":
-                        states.pop(chat, None)
+                        old = states.pop(chat, None)
+                        if old and old.get("mid"):
+                            clear_keyboard(token, chat, old["mid"])
                         send_msg(token, chat, "Cancelled.", keyboard=home_keyboard())
                         continue
                     st = states.get(chat)
@@ -451,48 +533,52 @@ def poll(token):
                         if kind == "renew":
                             if step == "days":
                                 if not valid_num(text.strip()):
-                                    send_msg(token, chat, "Days must be a number. Send days again:")
+                                    step_show(token, chat, st, "Days must be a number. Send days again:")
                                     continue
                                 st["days"] = text.strip(); st["step"] = "gb"
-                                send_msg(token, chat, "Send GB limit in GB (0 = unlimited):")
+                                step_show(token, chat, st, "Send GB limit in GB (0 = unlimited):")
                                 continue
                             if step == "gb":
                                 if not valid_num(text.strip()):
-                                    send_msg(token, chat, "GB must be a number. Send GB again:")
+                                    step_show(token, chat, st, "GB must be a number. Send GB again:")
                                     continue
                                 out = run_helper(["renew", st["user"], st["days"], text.strip()])
-                                states.pop(chat, None)
+                                done = states.pop(chat, None)
+                                if done and done.get("mid"):
+                                    clear_keyboard(token, chat, done["mid"])
                                 send_msg(token, chat, out + "\n\n" + user_detail(st["user"]), keyboard=home_keyboard())
                                 continue
                         if step == "user":
                             if not valid_username(text.strip()):
-                                send_msg(token, chat, "Invalid username. Send username again (2-32 chars: a-z, 0-9, _ or -):")
+                                step_show(token, chat, st, "Invalid username. Send username again (2-32 chars: a-z, 0-9, _ or -):")
                                 continue
                             st["user"] = text.strip(); st["step"] = "pass"
-                            send_msg(token, chat, "Send password:")
+                            step_show(token, chat, st, "Send password:")
                             continue
                         if step == "pass":
                             st["pass"] = text.strip(); st["step"] = "days"
-                            send_msg(token, chat, "Send days (number, e.g. 30):")
+                            step_show(token, chat, st, "Send days (number, e.g. 30):")
                             continue
                         if step == "days":
                             if not valid_num(text.strip()):
-                                send_msg(token, chat, "Days must be a number. Send days again:")
+                                step_show(token, chat, st, "Days must be a number. Send days again:")
                                 continue
                             st["days"] = text.strip(); st["step"] = "gb"
-                            send_msg(token, chat, "Send GB limit in GB (0 = unlimited):")
+                            step_show(token, chat, st, "Send GB limit in GB (0 = unlimited):")
                             continue
                         if step == "gb":
                             if not valid_num(text.strip()):
-                                send_msg(token, chat, "GB must be a number. Send GB again:")
+                                step_show(token, chat, st, "GB must be a number. Send GB again:")
                                 continue
                             out = run_helper(["create", st["user"], st["pass"], st["days"], text.strip()])
                             result = format_create_result(out, st["user"], st["pass"])
-                            states.pop(chat, None)
+                            done = states.pop(chat, None)
+                            if done and done.get("mid"):
+                                clear_keyboard(token, chat, done["mid"])
                             send_msg(token, chat, result, keyboard=home_keyboard())
                             continue
                     if text.strip() == "/start":
-                        send_msg(token, chat, home_text(), keyboard=home_keyboard())
+                        send_msg(token, chat, handle("/start"), keyboard=home_keyboard())
                     else:
                         send_msg(token, chat, handle(text), keyboard=home_keyboard())
         except Exception:
