@@ -55,11 +55,15 @@ ensure_chains(){
     [[ -f $ACCOUNTS_DIR/$u ]] || continue
     # Marking: NEW destination connections opened by this UID.
     iptables -t mangle -C OUTPUT -m conntrack --ctstate NEW -m owner --uid-owner "$uid" -j CONNMARK --set-mark "$uid" 2>/dev/null || iptables -t mangle -A OUTPUT -m conntrack --ctstate NEW -m owner --uid-owner "$uid" -j CONNMARK --set-mark "$uid" 2>/dev/null || log "connmark marking failed for $u uid=$uid"
-    # Counting rules (both directions).
-    iptables-save -c 2>/dev/null | grep -q -- "-A N4CONN .*--mark $uid " || iptables -A N4CONN -m connmark --mark "$uid" -j RETURN 2>/dev/null || true
-    iptables-save -c 2>/dev/null | grep -q -- "-A N4CONNIN .*--mark $uid " || iptables -A N4CONNIN -m connmark --mark "$uid" -j RETURN 2>/dev/null || true
+    # Counting rules (both directions). Use iptables -C, NOT grep on
+    # iptables-save: iptables-save prints connmark in HEX (0x3e9),
+    # so a decimal grep for "1001" never matches and duplicates pile
+    # up every run (proven 2026-10-30, VPS iptables-save output).
+    # iptables -C converts the mark itself, so it matches correctly.
+    iptables -C N4CONN -m connmark --mark "$uid" -j RETURN 2>/dev/null || iptables -A N4CONN -m connmark --mark "$uid" -j RETURN 2>/dev/null || true
+    iptables -C N4CONNIN -m connmark --mark "$uid" -j RETURN 2>/dev/null || iptables -A N4CONNIN -m connmark --mark "$uid" -j RETURN 2>/dev/null || true
     # Legacy owner rule (comparison only, kept from v1).
-    iptables-save -c 2>/dev/null | grep -q -- "--uid-owner $uid " || iptables -A N4ACCT -m owner --uid-owner "$uid" -j RETURN 2>/dev/null || true
+    iptables -C N4ACCT -m owner --uid-owner "$uid" -j RETURN 2>/dev/null || iptables -A N4ACCT -m owner --uid-owner "$uid" -j RETURN 2>/dev/null || true
   done </etc/passwd
 }
 
@@ -84,13 +88,13 @@ except Exception:
 cur = {}
 old_owner = {}
 for line in out.splitlines():
-    m = re.match(r"\[(\d+):(\d+)\]\s+-A N4CONN\b.*--mark\s+(\d+)\b", line)
+    m = re.match(r"\[(\d+):(\d+)\]\s+-A N4CONN\b.*--mark\s+(0x[0-9a-fA-F]+|\d+)\b", line)
     if m:
-        cur[int(m.group(3))] = cur.get(int(m.group(3)), 0) + int(m.group(2))
+        cur[int(m.group(3), 0)] = cur.get(int(m.group(3), 0), 0) + int(m.group(2))
         continue
-    m = re.match(r"\[(\d+):(\d+)\]\s+-A N4CONNIN\b.*--mark\s+(\d+)\b", line)
+    m = re.match(r"\[(\d+):(\d+)\]\s+-A N4CONNIN\b.*--mark\s+(0x[0-9a-fA-F]+|\d+)\b", line)
     if m:
-        cur[int(m.group(3))] = cur.get(int(m.group(3)), 0) + int(m.group(2))
+        cur[int(m.group(3), 0)] = cur.get(int(m.group(3), 0), 0) + int(m.group(2))
         continue
     m = re.match(r"\[(\d+):(\d+)\]\s+-A N4ACCT\b.*--uid-owner\s+(\d+)\b", line)
     if m:
