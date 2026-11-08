@@ -276,7 +276,31 @@ Persistent=true
 WantedBy=timers.target
 EOF
 }
+# Self-update guard (fix 2026-11-08): this script used to fetch a new
+# update.sh OVER ITSELF while running (/usr/local/bin/n4-update),
+# which caused two bugs - (a) a new file added to the fetch list was
+# only picked up on the NEXT Update run (bootstrap lag, e.g.
+# bot-backfill.sh needed a 2nd run / direct curl), and (b) bash
+# reading a file that curl overwrites mid-run could end with
+# "unexpected EOF while looking for matching ''" at the tail.
+# Now, when run from /usr/local/bin/n4-update, fetch the latest
+# updater to /tmp, syntax-check it, and exec it if it differs.
+# Running from /tmp (Menu [7] path, install.sh migration path)
+# skips this guard, so there is no exec loop.
+self_update(){
+  local self_path tmp
+  self_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
+  [[ $self_path == "/usr/local/bin/n4-update" ]] || return 0
+  tmp=/tmp/n4-update-latest
+  fetch update.sh "$tmp" 2>/dev/null || return 0
+  chmod +x "$tmp" 2>/dev/null || return 0
+  bash -n "$tmp" 2>/dev/null || { echo '[update] Downloaded updater failed syntax check; continuing with current version.' >&2; return 0; }
+  cmp -s "$tmp" /usr/local/bin/n4-update && return 0
+  echo '[update] New updater found; switching to it for this run.'
+  exec "$tmp" "$@"
+}
 main(){
+ self_update "$@"
  echo "N4 updater $VERSION"; b=$(backup); echo "Backup: $b"; detect; legacy_cleanup; save
  apt-get update -y >/dev/null; apt-get install -y openssh-server dropbear python3 curl openssl iptables iproute2 procps >/dev/null
  id -u n4share >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin n4share
