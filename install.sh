@@ -317,8 +317,8 @@ net.ipv4.tcp_keepalive_intvl = 30
 net.ipv4.tcp_keepalive_probes = 5
 EOF
  sysctl --system >/dev/null 2>&1 || true; ssh-keygen -A >/dev/null 2>&1 || true
- fetch_repo ws-proxy.py /usr/local/bin/ws-proxy.py; fetch_repo menu.sh /usr/local/bin/menu; fetch_repo update.sh /usr/local/bin/n4-update; fetch_repo gb-limit.sh /usr/local/bin/gb-limit.sh; fetch_repo gb-collector.sh /usr/local/bin/gb-collector.sh; fetch_repo bot-setup.sh /usr/local/bin/bot-setup.sh; fetch_repo bot.py /usr/local/bin/bot.py; fetch_repo n4-create-user.sh /usr/local/bin/n4-create-user.sh
- chmod 755 /usr/local/bin/ws-proxy.py /usr/local/bin/menu /usr/local/bin/n4-update /usr/local/bin/gb-limit.sh /usr/local/bin/gb-collector.sh /usr/local/bin/bot-setup.sh /usr/local/bin/bot.py /usr/local/bin/n4-create-user.sh
+ fetch_repo ws-proxy.py /usr/local/bin/ws-proxy.py; fetch_repo menu.sh /usr/local/bin/menu; fetch_repo update.sh /usr/local/bin/n4-update; fetch_repo gb-limit.sh /usr/local/bin/gb-limit.sh; fetch_repo gb-collector.sh /usr/local/bin/gb-collector.sh; fetch_repo bot-setup.sh /usr/local/bin/bot-setup.sh; fetch_repo bot.py /usr/local/bin/bot.py; fetch_repo n4-create-user.sh /usr/local/bin/n4-create-user.sh; fetch_repo bot-backfill.sh /usr/local/bin/n4-bot-backfill
+ chmod 755 /usr/local/bin/ws-proxy.py /usr/local/bin/menu /usr/local/bin/n4-update /usr/local/bin/gb-limit.sh /usr/local/bin/gb-collector.sh /usr/local/bin/bot-setup.sh /usr/local/bin/bot.py /usr/local/bin/n4-create-user.sh /usr/local/bin/n4-bot-backfill
  write_vpn_ssh; write_dropbear; write_ws_unit; write_slowdns; write_share; write_health; write_gb_timer; write_auto_menu
 }
 

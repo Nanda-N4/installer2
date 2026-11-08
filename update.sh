@@ -280,7 +280,7 @@ main(){
  echo "N4 updater $VERSION"; b=$(backup); echo "Backup: $b"; detect; legacy_cleanup; save
  apt-get update -y >/dev/null; apt-get install -y openssh-server dropbear python3 curl openssl iptables iproute2 procps >/dev/null
  id -u n4share >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin n4share
- fetch menu.sh /usr/local/bin/menu; fetch ws-proxy.py /usr/local/bin/ws-proxy.py; fetch share-server.py /usr/local/bin/n4-share-server.py; fetch update.sh /usr/local/bin/n4-update; fetch gb-limit.sh /usr/local/bin/gb-limit.sh; fetch gb-collector.sh /usr/local/bin/gb-collector.sh; fetch bot-setup.sh /usr/local/bin/bot-setup.sh; fetch bot.py /usr/local/bin/bot.py; fetch n4-create-user.sh /usr/local/bin/n4-create-user.sh; chmod 755 /usr/local/bin/menu /usr/local/bin/ws-proxy.py /usr/local/bin/n4-share-server.py /usr/local/bin/n4-update /usr/local/bin/gb-limit.sh /usr/local/bin/gb-collector.sh /usr/local/bin/bot-setup.sh /usr/local/bin/bot.py /usr/local/bin/n4-create-user.sh
+ fetch menu.sh /usr/local/bin/menu; fetch ws-proxy.py /usr/local/bin/ws-proxy.py; fetch share-server.py /usr/local/bin/n4-share-server.py; fetch update.sh /usr/local/bin/n4-update; fetch gb-limit.sh /usr/local/bin/gb-limit.sh; fetch gb-collector.sh /usr/local/bin/gb-collector.sh; fetch bot-setup.sh /usr/local/bin/bot-setup.sh; fetch bot.py /usr/local/bin/bot.py; fetch n4-create-user.sh /usr/local/bin/n4-create-user.sh; fetch bot-backfill.sh /usr/local/bin/n4-bot-backfill; chmod 755 /usr/local/bin/menu /usr/local/bin/ws-proxy.py /usr/local/bin/n4-share-server.py /usr/local/bin/n4-update /usr/local/bin/gb-limit.sh /usr/local/bin/gb-collector.sh /usr/local/bin/bot-setup.sh /usr/local/bin/bot.py /usr/local/bin/n4-create-user.sh /usr/local/bin/n4-bot-backfill
  mkdir -p "$N4/shares"; chown -R n4share:n4share "$N4/shares"; chmod 750 "$N4/shares"; find "$N4/shares" -type f -name '*.json' -exec chown n4share:n4share {} \; -exec chmod 640 {} \; 2>/dev/null||true
  [[ -f /etc/ssh/sshd_vpn_config ]] || { cp /etc/ssh/sshd_config /etc/ssh/sshd_vpn_config; sed -i "s/^#\?Port .*/Port $VPN_SSH_PORT/" /etc/ssh/sshd_vpn_config; }
  grep -q '^Port ' /etc/ssh/sshd_vpn_config && sed -i "s/^Port .*/Port $VPN_SSH_PORT/" /etc/ssh/sshd_vpn_config || echo "Port $VPN_SSH_PORT">>/etc/ssh/sshd_vpn_config
@@ -334,6 +334,6 @@ EOF
  [[ $SLOWDNS_ENABLED == 1 ]] && systemctl enable --now slowdns >/dev/null 2>&1||true
  sleep 2
  verify_layout || true
- echo; echo 'Update/migration complete.'; echo 'Existing Linux users, expiry, domain, SlowDNS files and firewall rules were preserved.'; echo 'Reserved ports were normalized: VPN SSH=109, Hybrid=443, Dropbear backend=1443.'; echo "Rollback backup: $b"; echo 'Run: menu'
+ echo; echo 'Update/migration complete.'; echo 'Bot-only list: run n4-bot-backfill once to auto-add Bot users to /etc/n4vpn/bot-users.'; echo 'Existing Linux users, expiry, domain, SlowDNS files and firewall rules were preserved.'; echo 'Reserved ports were normalized: VPN SSH=109, Hybrid=443, Dropbear backend=1443.'; echo "Rollback backup: $b"; echo 'Run: menu'
 }
 main "$@"
