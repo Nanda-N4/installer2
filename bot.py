@@ -20,6 +20,7 @@ import urllib.parse
 import urllib.request
 
 BOT_CONF = "/etc/n4vpn/bot.conf"
+BOT_USERS = "/etc/n4vpn/bot-users"
 HELPER = "/usr/local/bin/n4-create-user.sh"
 ACCOUNTS = "/etc/n4vpn/accounts"
 USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{1,31}$")
@@ -87,7 +88,10 @@ def read_conf_value(key, default=""):
     return default
 
 
-def list_users():
+def all_users():
+    # Every Linux VPN user on this VPS (Menu + Bot + legacy).
+    # Used ONLY for uniqueness checks (gen_username) and for the
+    # Menu-side view; the Bot never shows this list to the owner.
     try:
         users = []
         for line in open("/etc/passwd", encoding="utf-8"):
@@ -99,10 +103,62 @@ def list_users():
         return []
 
 
+def load_bot_users():
+    # Registry of Bot-created users only. Menu-created users are
+    # never written here, so they never appear in the Bot.
+    # Missing file = empty registry (fail-closed for visibility:
+    # a Menu user must never leak into the Bot by default).
+    # Backfill for an upgraded VPS is a one-time owner step:
+    #   printf 'n420h5\nn4508m\n' > /etc/n4vpn/bot-users
+    #   chmod 600 /etc/n4vpn/bot-users
+    try:
+        with open(BOT_USERS, encoding="utf-8") as f:
+            return {line.strip() for line in f if line.strip()}
+    except OSError:
+        return set()
+
+
+def save_bot_users(users):
+    try:
+        with open(BOT_USERS, "w", encoding="utf-8") as f:
+            for u in sorted(users):
+                f.write(u + "\n")
+        import os
+        os.chmod(BOT_USERS, 0o600)
+    except OSError:
+        pass
+
+
+def registry_add(user):
+    users = load_bot_users()
+    if user not in users:
+        users.add(user)
+        save_bot_users(users)
+
+
+def registry_remove(user):
+    users = load_bot_users()
+    if user in users:
+        users.discard(user)
+        save_bot_users(users)
+
+
+def list_users():
+    # Bot-visible users ONLY: Bot-created users in the registry.
+    # Menu users, legacy users and linuxuser are hidden here on
+    # purpose (owner decision 2026-11-08). Their VPN, GB counting,
+    # GB limit and Share Link still work; manage them via Menu.
+    reg = load_bot_users()
+    return sorted(u for u in all_users() if u in reg)
+
+
 def gen_username():
     # Owner's shop-bot pattern: N4 + 3 digits + 1 letter = 6 chars,
     # letter at a random position among the last 4 chars.
-    existing = set(list_users())
+    # Uniqueness is checked against ALL users (Menu users included):
+    # a generated name colliding with a Menu user must never happen,
+    # even though that Menu user is invisible in the Bot.
+    existing = set(all_users())
     for _ in range(50):
         digits = [secrets.choice(string.digits) for _ in range(3)]
         letter = secrets.choice(string.ascii_lowercase)
@@ -237,14 +293,7 @@ def home_text():
                 host = line.split("=", 1)[1].strip().strip('"')
     except OSError:
         pass
-    try:
-        users = 0
-        for line in open("/etc/passwd", encoding="utf-8"):
-            f = line.split(":")
-            if len(f) >= 3 and int(f[2]) >= 1000 and f[0] != "nobody":
-                users += 1
-    except Exception:
-        users = 0
+    users = len(list_users())
     return (f"★ N4 VPN\n━━━━━━━━━━━━━━\n"
             f"🖥 Host: {host or '-'}\n"
             f"👥 Users: {users}\n"
@@ -336,14 +385,7 @@ def handle(text):
                 "/list\n/create <user> <pass> <days> <gb> [limit]\n"
                 "/renew <user> <days> <gb>\n/delete <user>\n/usage <user>\n/cancel")
     if cmd == "/list":
-        try:
-            users = []
-            for line in open("/etc/passwd", encoding="utf-8"):
-                f = line.split(":")
-                if len(f) >= 3 and int(f[2]) >= 1000 and f[0] != "nobody":
-                    users.append(f[0])
-        except Exception:
-            users = []
+        users = list_users()
         return "Users:\n" + "\n".join(users) if users else "No users."
     if cmd in ("/usage", "/check", "/detail"):
         if len(parts) < 2 or not valid_username(parts[1]):
@@ -363,11 +405,18 @@ def handle(text):
     if cmd == "/renew":
         if len(parts) < 4 or not valid_username(parts[1]) or not valid_num(parts[2]) or not valid_num(parts[3]):
             return "Usage: /renew <user> <days> <gb>"
+        if parts[1] not in list_users():
+            return f"User '{parts[1]}' not found in Bot list. Manage it via Menu."
         return run_helper(["renew", parts[1], parts[2], parts[3]])
     if cmd == "/delete":
         if len(parts) < 2 or not valid_username(parts[1]):
             return "Invalid username."
-        return run_helper(["delete", parts[1]])
+        if parts[1] not in list_users():
+            return f"User '{parts[1]}' not found in Bot list. Manage it via Menu."
+        out = run_helper(["delete", parts[1]])
+        if out.startswith("DELETED:"):
+            registry_remove(parts[1])
+        return out
     return "Unknown command."
 
 
@@ -504,7 +553,10 @@ def poll(token):
                     elif data.startswith("delyes:"):
                         u = data[7:]
                         states.pop(chat, None)
-                        cb_show(token, chat, mid, run_helper(["delete", u]), keyboard=home_keyboard())
+                        out = run_helper(["delete", u])
+                        if out.startswith("DELETED:"):
+                            registry_remove(u)
+                        cb_show(token, chat, mid, out, keyboard=home_keyboard())
                     elif data == "renew_prompt":
                         cb_show(token, chat, mid, "Send: /renew <user> <days> <gb>", keyboard=home_keyboard())
                     elif data == "usage_prompt":
@@ -572,6 +624,8 @@ def poll(token):
                                 continue
                             out = run_helper(["create", st["user"], st["pass"], st["days"], text.strip()])
                             result = format_create_result(out, st["user"], st["pass"])
+                            if result.startswith("✅ Account Created!"):
+                                registry_add(st["user"])
                             done = states.pop(chat, None)
                             if done and done.get("mid"):
                                 clear_keyboard(token, chat, done["mid"])
@@ -580,7 +634,12 @@ def poll(token):
                     if text.strip() == "/start":
                         send_msg(token, chat, handle("/start"), keyboard=home_keyboard())
                     else:
-                        send_msg(token, chat, handle(text), keyboard=home_keyboard())
+                        res = handle(text)
+                        if text.strip().startswith("/create") and res.startswith("✅ Account Created!"):
+                            m = re.search(r"Username: (\S+)", res)
+                            if m:
+                                registry_add(m.group(1))
+                        send_msg(token, chat, res, keyboard=home_keyboard())
         except Exception:
             time.sleep(5)
 

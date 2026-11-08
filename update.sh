@@ -35,7 +35,7 @@ detect(){
  # with their current Linux expiry, so an update never locks old users.
  mkdir -p "$N4/accounts"; while IFS=: read -r lu _ luid _ _ _ _; do ((luid>=1000)) || continue; [[ $lu == nobody ]] && continue; [[ -f $N4/accounts/$lu ]] && continue; lexp=$(chage -l "$lu" 2>/dev/null | awk -F': ' '/Account expires/{print $2}'); [[ $lexp == never || -z $lexp ]] && lexp='2099-12-31'; lexp=$(date -d "$lexp" +%F 2>/dev/null || echo '2099-12-31'); printf 'GB_LIMIT=0\nUSED_BYTES=0\nEXPIRY=%s\n' "$lexp" > "$N4/accounts/$lu"; chmod 600 "$N4/accounts/$lu"; done </etc/passwd
 }
-save(){ mkdir -p "$N4/device-limits" "$N4/shares" /var/log/n4vpn /var/lib/n4vpn-health; cat >"$CONF" <<EOF
+save(){ mkdir -p "$N4/device-limits" "$N4/shares" /var/log/n4vpn /var/lib/n4vpn-health; [[ -f "$N4/bot-users" ]] || { touch "$N4/bot-users"; chmod 600 "$N4/bot-users"; }; cat >"$CONF" <<EOF
 VPN_SSH_PORT=$VPN_SSH_PORT
 WS_PORTS="$WS_PORTS"
 DROPBEAR_PORTS="$DROPBEAR_PORTS"

@@ -29,6 +29,10 @@ load_conf(){
 }
 save_conf(){
  mkdir -p "$N4_DIR/device-limits" "$N4_DIR/shares" /var/log/n4vpn /var/lib/n4vpn-health
+ # Bot-only user registry: created empty, never overwritten.
+ # Bot adds a user here on successful Bot create; Menu never
+ # writes here, so Menu users stay hidden from the Bot.
+ [[ -f "$N4_DIR/bot-users" ]] || { touch "$N4_DIR/bot-users"; chmod 600 "$N4_DIR/bot-users"; }
  cat >"$CONF" <<EOF
 VPN_SSH_PORT=$VPN_SSH_PORT
 WS_PORTS="$WS_PORTS"
