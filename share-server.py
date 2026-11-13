@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-N4_VERSION = "2026.09.24-r10"
+N4_VERSION = "2026.11.13-r11"
 
 import datetime
 import html
@@ -48,12 +48,14 @@ def load_token(token):
     except Exception:
         exp = 0
 
+    # Expired token: the page STILL renders (status/balance checkable).
+    # The account is locked server-side, so the config cannot connect, but
+    # the user must still be able to open the link and see Expired / GB
+    # limit reached + balance. Only truly unknown tokens are invalid.
+    # (Changed 2026-11-13 — previously the file was deleted here and the
+    # link returned 410.)
     if exp <= int(time.time()):
-        try:
-            path.unlink()
-        except OSError:
-            pass
-        return None, "expired"
+        return data, "expired"
 
     return data, "ok"
 
@@ -95,6 +97,7 @@ def remaining_info(username):
         status = "GB limit reached"
     else:
         status = "Active"
+    rem_gb = (gb - used_gb) if gb > 0 else None
     return {
         "status": status,
         "expiry": expiry,
@@ -102,7 +105,10 @@ def remaining_info(username):
         "gb": gb,
         "used_gb": used_gb,
         "used_mb": used / (1024 ** 2),
-        "rem_gb": (gb - used_gb) if gb > 0 else None,
+        # Remaining is clamped at 0 — a user 0.07 GB over the limit sees
+        # 0.00 GB, never a negative number.
+        "rem_gb": max(0.0, rem_gb) if rem_gb is not None else None,
+        "percent_used": (used_gb / gb * 100.0) if gb > 0 else None,
     }
 
 
@@ -222,8 +228,19 @@ class Handler(BaseHTTPRequestHandler):
         )
 
         rem = remaining_info(username)
+        updated_txt = time.strftime("%Y-%m-%d %H:%M:%S")
         if rem is None:
-            remaining = '<div class="d"><span>Balance</span><b>Not available for this account</b></div>'
+            status_key = "active"
+            status_badge = '<span class="s-badge s-active">● Active — သုံးလို့ရပါတယ်</span>'
+            status_note = ""
+            status_meta = '<span class="active">● Active</span>'
+            status_section = (
+                '<section class="sec"><div class="st">ACCOUNT STATUS</div>'
+                + status_badge
+                + '<div class="d"><span>Balance</span><b>Not available for this account</b></div>'
+                + f'<div class="meta"><span>Last updated: {esc(updated_txt)} (server time)</span></div></section>'
+            )
+            dim_open, dim_close = "", ""
         else:
             if rem["days_left"] is None:
                 days_txt = "-"
@@ -235,17 +252,59 @@ class Handler(BaseHTTPRequestHandler):
                 days_txt = f"{rem['days_left']} days left"
             rem_gb_txt = f"{rem['rem_gb']:.2f} GB" if rem["rem_gb"] is not None else "Unlimited"
             gb_txt = f"{rem['gb']} GB" if rem["gb"] > 0 else "Unlimited"
-            remaining = "".join(
-                f'<div class="d"><span>{esc(label)}</span><b>{esc(val)}</b></div>'
+            expiry_txt = rem["expiry"] or "-"
+            if rem["status"] == "Expired":
+                status_key = "expired"
+                status_badge = '<span class="s-badge s-expired">● သက်တမ်း ကုန်သွားပြီ — Expired</span>'
+                status_note = "VPN ချိတ်လို့မရတော့ပါ — Renew လုပ်ပါ။ ဒီ Link ကနေ Balance ပြန်စစ်လို့ရပါတယ်။"
+                status_meta = '<span class="expired">● Expired</span>'
+            elif rem["status"] == "GB limit reached":
+                status_key = "gb"
+                status_badge = '<span class="s-badge s-gb">● GB ကုန်သွားပြီ — GB Limit Reached</span>'
+                status_note = "VPN ချိတ်လို့မရတော့ပါ — Renew လုပ်ပါ။ ဒီ Link ကနေ Balance ပြန်စစ်လို့ရပါတယ်။"
+                status_meta = '<span class="gb">● GB Limit Reached</span>'
+            else:
+                status_key = "active"
+                status_badge = '<span class="s-badge s-active">● Active — သုံးလို့ရပါတယ်</span>'
+                status_note = ""
+                status_meta = '<span class="active">● Active</span>'
+            if rem["percent_used"] is None:
+                bar = '<div class="bar-note">GB Limit: Unlimited</div>'
+            else:
+                pct = rem["percent_used"]
+                bar = (
+                    f'<div class="bar"><div class="barfill {"bar-gb" if pct >= 100 else "bar-ok"}" '
+                    f'style="width:{min(pct, 100.0):.1f}%"></div></div>'
+                    f'<div class="bar-label"><span>Used {rem["used_gb"]:.2f} GB / {gb_txt}</span>'
+                    f'<span>{pct:.0f}%</span></div>'
+                )
+            bignums = "".join(
+                f'<div class="big"><span>{esc(label)}</span><b>{esc(val)}</b></div>'
                 for label, val in (
-                    ("Status", rem["status"]),
-                    ("Days Left", days_txt),
-                    ("GB Limit", gb_txt),
-                    ("Used", f"{rem['used_gb']:.2f} GB ({rem['used_mb']:.1f} MB)"),
+                    ("Used", f"{rem['used_gb']:.2f} GB"),
                     ("Remaining", rem_gb_txt),
+                    ("Days Left", days_txt),
+                    ("Expiry Date", expiry_txt),
                 )
             )
-        updated_txt = time.strftime("%Y-%m-%d %H:%M:%S")
+            note_html = f'<div class="note">{esc(status_note)}</div>' if status_note else ""
+            status_section = (
+                '<section class="sec"><div class="st">ACCOUNT STATUS — အခြေအနေ</div>'
+                + status_badge + note_html + bar
+                + f'<div class="bignums">{bignums}</div>'
+                + '<button class="refresh" onclick="location.reload()">↻ Refresh — အသစ်ပြန်ဖတ်</button>'
+                + f'<div class="meta"><span>Last updated: {esc(updated_txt)} (server time, re-read on every refresh)</span></div></section>'
+            )
+            if status_key == "active":
+                dim_open, dim_close = "", ""
+            else:
+                # Config stays visible (server/port info) but dimmed, with a
+                # clear note that it cannot connect until renewed.
+                dim_open = (
+                    '<div class="dim-note">ဒီ Config နဲ့ ချိတ်လို့မရတော့ပါ — Renew လုပ်ပါ</div>'
+                    '<div class="dimmed">'
+                )
+                dim_close = "</div>"
 
         default_payload = "GET / HTTP/1.1[crlf]Host: [host][crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]"
         mec_payload = "PUT [host_port] [protocol][crlf]Host: www.mectel.com.mm[crlf][crlf]"
@@ -258,7 +317,7 @@ class Handler(BaseHTTPRequestHandler):
 <meta name="theme-color" content="#080a0f">
 <title>N4 VPN</title>
 <style>
-:root{{color-scheme:dark;--bg:#07090d;--card:#0d1117;--line:#202833;--muted:#8b96a5;--green:#7de5a0;--red:#ff304f;--blue:#8ec8ff}}
+:root{{color-scheme:dark;--bg:#07090d;--card:#0d1117;--line:#202833;--muted:#8b96a5;--green:#7de5a0;--red:#ff304f;--orange:#ffb454;--blue:#8ec8ff}}
 *{{box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
 html,body{{margin:0;min-height:100%;background:radial-gradient(circle at top,rgba(255,48,79,.08),transparent 30%),var(--bg);color:#f4f6f8;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}}
 body{{padding:max(10px,env(safe-area-inset-top)) 10px max(12px,env(safe-area-inset-bottom))}}
@@ -273,17 +332,34 @@ body{{padding:max(10px,env(safe-area-inset-top)) 10px max(12px,env(safe-area-ins
 .details{{display:grid;grid-template-columns:1fr 1fr;gap:6px}}.d{{background:#090d12;border:1px solid #202a35;border-radius:10px;padding:7px 8px}}.d span{{display:block;color:var(--muted);font-size:8px;margin-bottom:3px}}.d b{{font-size:10px;font-weight:750;word-break:break-word}}
 .payloads{{display:grid;grid-template-columns:1fr 1fr;gap:6px}}.p{{min-width:0;background:#090d12;border:1px solid #202a35;border-radius:10px;padding:7px 8px}}.pt{{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}}.pt span{{font-size:9px;font-weight:850}}.p code{{display:block;height:43px;overflow:auto;word-break:break-word;white-space:normal;color:var(--blue);font:8.5px/1.35 ui-monospace,monospace;scrollbar-width:none}}.p code::-webkit-scrollbar{{display:none}}
 .foot{{padding:8px 12px 10px;display:flex;justify-content:space-between;gap:8px;color:#65717f;font-size:8px}}
+.s-badge{{display:inline-block;font-size:15px;font-weight:850;padding:9px 12px;border-radius:999px;margin:2px 0 8px}}
+.s-active{{color:#0d3d1e;background:rgba(125,229,160,.18);border:1px solid rgba(125,229,160,.45)}}
+.s-gb{{color:#3d2700;background:rgba(255,180,84,.18);border:1px solid rgba(255,180,84,.5)}}
+.s-expired{{color:#ffd7dc;background:rgba(255,48,79,.2);border:1px solid rgba(255,48,79,.5)}}
+.note{{font-size:11px;color:#c8d0da;margin:0 0 9px;line-height:1.5}}
+.bar{{height:12px;border-radius:999px;background:#171e27;border:1px solid #202a35;overflow:hidden}}
+.barfill{{height:100%;border-radius:999px}}.bar-ok{{background:linear-gradient(90deg,#2fbf71,#7de5a0)}}.bar-gb{{background:linear-gradient(90deg,#ff8a00,#ffb454)}}
+.bar-label{{display:flex;justify-content:space-between;color:var(--muted);font-size:10px;margin:5px 1px 9px}}
+.bar-note{{color:var(--muted);font-size:10px;margin:0 0 9px}}
+.bignums{{display:grid;grid-template-columns:1fr 1fr;gap:6px}}
+.big{{background:#090d12;border:1px solid #202a35;border-radius:12px;padding:10px}}
+.big span{{display:block;color:var(--muted);font-size:9px;margin-bottom:4px}}
+.big b{{font-size:17px;font-weight:800}}
+.refresh{{width:100%;border:0;border-radius:10px;padding:10px;background:#171e27;color:#e4eaf0;font-size:12px;font-weight:800;margin-top:9px;cursor:pointer}}
+.dim-note{{margin:10px 12px 0;padding:9px 10px;border-radius:10px;background:rgba(255,48,79,.12);border:1px solid rgba(255,48,79,.35);color:#ffb3bd;font-size:11px;font-weight:800;text-align:center}}
+.dimmed{{opacity:.45;filter:grayscale(.6)}}
+.expired{{color:var(--red)}}.gb{{color:var(--orange)}}
 @media(max-width:370px){{.quick{{grid-template-columns:1fr}}.payloads{{grid-template-columns:1fr}}}}
 </style></head><body><div class="wrap"><section class="card">
-<header class="head"><div class="brand"><div class="bl"><div class="logo">N4</div><div class="name"><strong>N4 VPN</strong><small>Connection Details</small></div></div><div class="badge">PRIVATE</div></div><div class="meta"><span class="active">● Active</span><span>Expires {esc(data.get("expires_date",""))}</span></div></header>
-<section class="sec"><div class="st">QUICK COPY</div><div class="quick">{''.join(quick)}</div></section>
+<header class="head"><div class="brand"><div class="bl"><div class="logo">N4</div><div class="name"><strong>N4 VPN</strong><small>Connection Details</small></div></div><div class="badge">PRIVATE</div></div><div class="meta">{status_meta}<span>Expires {esc(data.get("expires_date",""))}</span></div></header>
+{status_section}
+{dim_open}<section class="sec"><div class="st">QUICK COPY</div><div class="quick">{''.join(quick)}</div></section>
 <section class="sec"><div class="st">SERVICE DETAILS</div><div class="details">{details}</div></section>
-<section class="sec"><div class="st">REMAINING BALANCE — refresh to update</div><div class="details">{remaining}</div><div class="meta"><span>Last updated: {esc(updated_txt)} (server time, re-read on every refresh)</span></div></section>
 <section class="sec"><div class="st">PAYLOADS</div><div class="payloads">
 <div class="p"><div class="pt"><span>DEFAULT</span><button class="copy" onclick="cp('default_payload',this)">Copy</button></div><code id="default_payload">{esc(default_payload)}</code></div>
 <div class="p"><div class="pt"><span>MEC</span><button class="copy" onclick="cp('mec_payload',this)">Copy</button></div><code id="mec_payload">{esc(mec_payload)}</code></div>
-</div></section>
-<footer class="foot"><span>N4 NETWORK • {esc(N4_VERSION)}</span><span>Auto expires with account</span></footer>
+</div></section>{dim_close}
+<footer class="foot"><span>N4 NETWORK • {esc(N4_VERSION)}</span><span>Link stays checkable after expiry — VPN stays locked until renewed</span></footer>
 </section></div>
 <script>
 async function cp(id,b){{const e=document.getElementById(id),t=e.textContent;try{{await navigator.clipboard.writeText(t)}}catch(_){{const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();document.execCommand("copy");a.remove()}}const o=b.textContent;b.textContent="OK";b.classList.add("ok");setTimeout(()=>{{b.textContent=o;b.classList.remove("ok")}},850)}}

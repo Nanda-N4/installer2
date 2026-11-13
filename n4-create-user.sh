@@ -27,7 +27,7 @@ do_create(){
   useradd -M -s /bin/false -e "$exp" -p "$(openssl passwd -6 "$p")" "$u" || { echo 'Create failed.' >&2; exit 4; }
   mkdir -p "$DEV" "$SHARES" "$N4/accounts"
   echo "$l" >"$DEV/$u"; sync_limits
-  printf 'GB_LIMIT=%s\nUSED_BYTES=0\nEXPIRY=%s\n' "$gb" "$exp" >"$N4/accounts/$u"; chmod 600 "$N4/accounts/$u"
+  printf 'GB_LIMIT=%s\nUSED_BYTES=0\nEXPIRY=%s\n' "$gb" "$exp" >"$N4/accounts/$u"; chgrp n4share "$N4/accounts/$u" 2>/dev/null || true; chmod 640 "$N4/accounts/$u"
   local token epoch file link; token=$(openssl rand -hex 24); epoch=$(date -d "$exp 23:59:59" +%s); file="$SHARES/$token.json"
   python3 - "$file" "$u" "$p" "$exp" "$epoch" "$HOST_DOMAIN" "$VPN_SSH_PORT" "$WS_PORTS" "$HYBRID_PORT" '' "${NS_DOMAIN:-}" <<'PY'
 import json,sys
@@ -50,7 +50,7 @@ do_renew(){
   [[ $cur != never && -n $cur ]] && base=$(date -d "$cur" +%F 2>/dev/null || date +%F)
   [[ $(date -d "$base" +%s) -lt $(date +%s) ]] && base=$(date +%F)
   new=$(date -d "$base +$d days" +%F); chage -E "$new" "$u"
-  mkdir -p "$N4/accounts"; printf 'GB_LIMIT=%s\nUSED_BYTES=0\nEXPIRY=%s\n' "$gb" "$new" >"$N4/accounts/$u"; chmod 600 "$N4/accounts/$u"
+  mkdir -p "$N4/accounts"; printf 'GB_LIMIT=%s\nUSED_BYTES=0\nEXPIRY=%s\n' "$gb" "$new" >"$N4/accounts/$u"; chgrp n4share "$N4/accounts/$u" 2>/dev/null || true; chmod 640 "$N4/accounts/$u"
   echo "USER:$u"; echo "EXPIRY:$new"; echo "GB:$gb"
 }
 do_delete(){

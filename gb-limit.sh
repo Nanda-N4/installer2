@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# installer2 DRAFT - UNTESTED, not integrated into menu.sh yet.
+# installer2 — GB limit helper.
 # Purpose: GB + Days, whichever comes first, closes the account.
 # Record format (one file per user, under /etc/n4vpn/accounts/):
 #   GB_LIMIT=10   (GB, integer, per validity period)
-#   USED_BYTES=0  (bytes counted by the accounting collector - TODO: collector)
+#   USED_BYTES=0  (bytes counted by the accounting collector)
 #   EXPIRY=2026-11-05 (YYYY-MM-DD, same date as the Linux account expiry)
 # Behaviour: if today > EXPIRY, or USED_BYTES >= GB_LIMIT*1024^3,
-#   lock the Linux user, kill its sessions, remove its share file,
-#   (Xray/V2Ray removed from fast version - no V2Ray user to remove.)
+#   lock the Linux user and kill its sessions.
+#   The ShareLink is deliberately NOT deleted (changed 2026-11-13): a
+#   closed account keeps its link so the user can still check status /
+#   balance — the share page shows Expired / GB limit reached and the VPN
+#   itself stays locked server-side. Only a manual delete (Menu / Bot /
+#   n4-create-user delete) removes the share, via n4-cleanup <user>.
 # Renewal must reset USED_BYTES to 0 and set a new EXPIRY + GB_LIMIT.
 set -u
 N4_DIR=/etc/n4vpn
@@ -23,10 +27,8 @@ close_user() {
   log "CLOSE $u reason=$reason"
   usermod -L "$u" 2>/dev/null || true
   pkill -KILL -u "$u" 2>/dev/null || true
-  [[ -x /usr/local/sbin/n4-cleanup ]] && /usr/local/sbin/n4-cleanup "$u" >/dev/null 2>&1 || true
-  # Share files are per-token, not per-user filename; the cleanup timer
-  # removes expired share files. Do not delete other users' shares here
-  # in the integrated version - this draft keeps the call minimal.
+  # Share is NOT deleted here (see header): the user keeps checking
+  # status/balance on the ShareLink; only manual delete removes it.
 }
 
 check_user() {

@@ -193,26 +193,40 @@ WantedBy=multi-user.target
 EOF
  cat >/usr/local/sbin/n4-cleanup <<'EOF'
 #!/usr/bin/env bash
+# n4-cleanup — ShareLink housekeeping (changed 2026-11-13):
+#  - With a target username (manual delete via Menu / Bot / n4-create-user):
+#    delete ONLY that user's share files.
+#  - Without a target (timer run): delete ONLY shares whose username no
+#    longer exists in /etc/passwd (a truly deleted user).
+#  - NEVER delete a share because its expires_epoch passed or because the
+#    account hit its GB limit / expiry: a closed account keeps its
+#    ShareLink so the user can still check status/balance (the share page
+#    shows Expired / GB limit reached, and the VPN itself stays locked
+#    server-side). Renewing re-activates the same link.
 set -u
-N4=/etc/n4vpn; target=${1:-}; now=$(date +%s)
+N4=/etc/n4vpn; target=${1:-}
 for f in "$N4/shares"/*.json; do
  [[ -f $f ]] || continue
  u=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("username",""))' "$f" 2>/dev/null || true)
- e=$(python3 -c 'import json,sys;print(int(json.load(open(sys.argv[1])).get("expires_epoch",0)))' "$f" 2>/dev/null || echo 0)
- if [[ -n $target && $u == "$target" ]] || (( e>0 && e<=now )); then rm -f "$f"; fi
+ [[ -n $u ]] || continue
+ if [[ -n $target ]]; then
+  [[ $u == "$target" ]] && rm -f "$f"
+  continue
+ fi
+ id "$u" >/dev/null 2>&1 || rm -f "$f"
 done
 EOF
  chmod 755 /usr/local/sbin/n4-cleanup
  cat >/etc/systemd/system/n4-cleanup.service <<'EOF'
 [Unit]
-Description=N4 expiry cleanup
+Description=N4 share cleanup (deleted users only)
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/n4-cleanup
 EOF
  cat >/etc/systemd/system/n4-cleanup.timer <<'EOF'
 [Unit]
-Description=N4 expiry cleanup timer
+Description=N4 share cleanup timer
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=10min

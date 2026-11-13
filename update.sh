@@ -33,7 +33,9 @@ detect(){
  WS_PORTS='80'; DROPBEAR_PORTS=''
  # Legacy GB safety: users with no accounts record get GB_LIMIT=0 (unlimited)
  # with their current Linux expiry, so an update never locks old users.
- mkdir -p "$N4/accounts"; while IFS=: read -r lu _ luid _ _ _ _; do ((luid>=1000)) || continue; [[ $lu == nobody ]] && continue; [[ -f $N4/accounts/$lu ]] && continue; lexp=$(chage -l "$lu" 2>/dev/null | awk -F': ' '/Account expires/{print $2}'); [[ $lexp == never || -z $lexp ]] && lexp='2099-12-31'; lexp=$(date -d "$lexp" +%F 2>/dev/null || echo '2099-12-31'); printf 'GB_LIMIT=0\nUSED_BYTES=0\nEXPIRY=%s\n' "$lexp" > "$N4/accounts/$lu"; chmod 600 "$N4/accounts/$lu"; done </etc/passwd
+ mkdir -p "$N4/accounts"; while IFS=: read -r lu _ luid _ _ _ _; do ((luid>=1000)) || continue; [[ $lu == nobody ]] && continue; [[ -f $N4/accounts/$lu ]] && continue; lexp=$(chage -l "$lu" 2>/dev/null | awk -F': ' '/Account expires/{print $2}'); [[ $lexp == never || -z $lexp ]] && lexp='2099-12-31'; lexp=$(date -d "$lexp" +%F 2>/dev/null || echo '2099-12-31'); printf 'GB_LIMIT=0\nUSED_BYTES=0\nEXPIRY=%s\n' "$lexp" > "$N4/accounts/$lu"; chgrp n4share "$N4/accounts/$lu" 2>/dev/null || true; chmod 640 "$N4/accounts/$lu"; done </etc/passwd
+# ShareLink balance read: n4-share runs as User=n4share, so existing account files must be group-readable (640, group n4share). No secrets in these files (GB_LIMIT/USED_BYTES/EXPIRY only).
+for _af in "$N4/accounts"/*; do [[ -f $_af ]] && { chgrp n4share "$_af" 2>/dev/null || true; chmod 640 "$_af"; }; done
 }
 save(){ mkdir -p "$N4/device-limits" "$N4/shares" /var/log/n4vpn /var/lib/n4vpn-health; [[ -f "$N4/bot-users" ]] || { touch "$N4/bot-users"; chmod 600 "$N4/bot-users"; }; cat >"$CONF" <<EOF
 VPN_SSH_PORT=$VPN_SSH_PORT
@@ -311,26 +313,40 @@ main(){
  write_units; write_health; write_gb_timer
  cat >/usr/local/sbin/n4-cleanup <<'EOF'
 #!/usr/bin/env bash
+# n4-cleanup — ShareLink housekeeping (changed 2026-11-13):
+#  - With a target username (manual delete via Menu / Bot / n4-create-user):
+#    delete ONLY that user's share files.
+#  - Without a target (timer run): delete ONLY shares whose username no
+#    longer exists in /etc/passwd (a truly deleted user).
+#  - NEVER delete a share because its expires_epoch passed or because the
+#    account hit its GB limit / expiry: a closed account keeps its
+#    ShareLink so the user can still check status/balance (the share page
+#    shows Expired / GB limit reached, and the VPN itself stays locked
+#    server-side). Renewing re-activates the same link.
 set -u
-N4=/etc/n4vpn; target=${1:-}; now=$(date +%s)
+N4=/etc/n4vpn; target=${1:-}
 for f in "$N4/shares"/*.json; do
  [[ -f $f ]] || continue
  u=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("username",""))' "$f" 2>/dev/null || true)
- e=$(python3 -c 'import json,sys;print(int(json.load(open(sys.argv[1])).get("expires_epoch",0)))' "$f" 2>/dev/null || echo 0)
- if [[ -n $target && $u == "$target" ]] || (( e>0 && e<=now )); then rm -f "$f"; fi
+ [[ -n $u ]] || continue
+ if [[ -n $target ]]; then
+  [[ $u == "$target" ]] && rm -f "$f"
+  continue
+ fi
+ id "$u" >/dev/null 2>&1 || rm -f "$f"
 done
 EOF
  chmod 755 /usr/local/sbin/n4-cleanup
  cat >/etc/systemd/system/n4-cleanup.service <<'EOF'
 [Unit]
-Description=N4 expiry cleanup
+Description=N4 share cleanup (deleted users only)
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/n4-cleanup
 EOF
  cat >/etc/systemd/system/n4-cleanup.timer <<'EOF'
 [Unit]
-Description=N4 expiry cleanup timer
+Description=N4 share cleanup timer
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=10min
